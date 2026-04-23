@@ -12,6 +12,7 @@
 #    Rocky Linux 8 / 9 / 10
 #    AlmaLinux 8 / 9 / 10
 #    CentOS Stream 9 / 10
+#    CloudLinux 8
 #    openSUSE Leap 15
 #    Fedora 41 / 42
 #
@@ -49,7 +50,7 @@ info "OS detected : ${OS_NAME} ${OS_VERSION} (id=${OS_ID})"
 # Map OS → family
 case "${OS_ID}" in
     debian|ubuntu)                          OS_FAMILY="debian"  ;;
-    rocky|almalinux|centos|rhel)            OS_FAMILY="rhel"    ;;
+    rocky|almalinux|centos|rhel|cloudlinux) OS_FAMILY="rhel"    ;;
     fedora)                                 OS_FAMILY="fedora"  ;;
     opensuse*|opensuse-leap|sles)           OS_FAMILY="opensuse";;
     *) error "Unsupported OS: ${OS_NAME} (id=${OS_ID})." ;;
