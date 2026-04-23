@@ -47,15 +47,26 @@ echo -e "${BOLD}  HostTonic MOTD Installer${NC}"
 echo -e "${BOLD}══════════════════════════════════════════════${NC}\n"
 info "OS detected : ${OS_NAME} ${OS_VERSION} (id=${OS_ID})"
 
-# Map OS → family
+# ── Pass 1: match on exact OS ID ────────────────────────────
 case "${OS_ID}" in
-    debian|ubuntu)                          OS_FAMILY="debian"  ;;
-    rocky|almalinux|centos|rhel|cloudlinux) OS_FAMILY="rhel"    ;;
-    fedora)                                 OS_FAMILY="fedora"  ;;
-    opensuse*|opensuse-leap|sles)           OS_FAMILY="opensuse";;
-    *) error "Unsupported OS: ${OS_NAME} (id=${OS_ID})." ;;
+    debian|ubuntu)                           OS_FAMILY="debian"  ;;
+    rocky|almalinux|centos|rhel|cloudlinux)  OS_FAMILY="rhel"    ;;
+    fedora)                                  OS_FAMILY="fedora"  ;;
+    opensuse*|opensuse-leap|sles)            OS_FAMILY="opensuse";;
+    *) OS_FAMILY="" ;;
 esac
-info "OS family   : ${OS_FAMILY}"
+
+# ── Pass 2: fall back to ID_LIKE (catches derivatives) ──────
+if [[ -z "$OS_FAMILY" ]]; then
+    ID_LIKE_LC="${ID_LIKE,,}"   # lower-case the ID_LIKE field
+    case "$ID_LIKE_LC" in
+        *debian*|*ubuntu*)          OS_FAMILY="debian"  ;;
+        *rhel*|*centos*|*fedora*|*cloudlinux*)  OS_FAMILY="rhel" ;;
+        *opensuse*|*suse*)          OS_FAMILY="opensuse";;
+        *) error "Unsupported OS: ${OS_NAME} (id=${OS_ID}, id_like=${ID_LIKE:-none}). Please open an issue at https://github.com/hosttonic/motd" ;;
+    esac
+    info "Matched via ID_LIKE=\"${ID_LIKE}\" → family=${OS_FAMILY}"
+fi
 
 # ════════════════════════════════════════════════════════════
 #  BANNER content (embedded — used by installer functions)
