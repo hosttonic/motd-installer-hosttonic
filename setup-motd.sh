@@ -81,9 +81,10 @@ write_stats_script() {
     cat > "$TARGET" <<'STATS'
 #!/usr/bin/env bash
 # HostTonic dynamic MOTD — server stats on login
+set +e  # MUST NOT fail — never abort login on any error
 
-# ── 60-second output cache (reduces latency on busy servers) ──
-CACHE_FILE="/tmp/.hosttonic_motd_cache"
+# ── 60-second output cache (per-user, avoids permission issues) ──
+CACHE_FILE="/tmp/.hosttonic_motd_cache_${UID:-0}"
 if [[ -f "$CACHE_FILE" ]] && [[ -n "$(find "$CACHE_FILE" -mmin -1 2>/dev/null)" ]]; then
     cat "$CACHE_FILE"
     exit 0
@@ -91,12 +92,12 @@ fi
 
 # ── Gather stats ─────────────────────────────────────────────
 if command -v journalctl >/dev/null 2>&1; then
-    FAILED_ROOT_24H=$(journalctl _COMM=sshd --since "24 hours ago" 2>/dev/null \
-        | grep -c "Failed password for root" || true)
+    FAILED_ROOT_24H=$(timeout 2 journalctl _COMM=sshd --since "24 hours ago" 2>/dev/null \
+        | grep -c "Failed password for root" || echo 0)
 elif [[ -f /var/log/auth.log ]]; then
-    FAILED_ROOT_24H=$(grep -c "Failed password for root" /var/log/auth.log 2>/dev/null || true)
+    FAILED_ROOT_24H=$(grep -c "Failed password for root" /var/log/auth.log 2>/dev/null || echo 0)
 elif [[ -f /var/log/secure ]]; then
-    FAILED_ROOT_24H=$(grep -c "Failed password for root" /var/log/secure 2>/dev/null || true)
+    FAILED_ROOT_24H=$(grep -c "Failed password for root" /var/log/secure 2>/dev/null || echo 0)
 else
     FAILED_ROOT_24H="N/A"
 fi
@@ -118,7 +119,7 @@ LOGIN_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
     printf "Failed root SSH (24h): %s\n" "$FAILED_ROOT_24H"
     printf "Login time  : %s\n" "$LOGIN_TIME"
     echo "══════════════════════════════════════════════"
-} | tee "$CACHE_FILE"
+} | tee "$CACHE_FILE" && chmod 644 "$CACHE_FILE" 2>/dev/null || true
 STATS
     chmod +x "$TARGET"
 }
@@ -163,28 +164,84 @@ BANNER
 
 # ── RHEL / Fedora / openSUSE: profile.d ─────────────────────
 install_profiled() {
-    # Write banner to /etc/motd (shown by sshd PrintMotd)
-    step "Writing static banner → /etc/motd"
-    printf '\n══════════════════════════════════════════════\n' > /etc/motd
-    printf '░█░█░█▀█░█▀▀░▀█▀░░░▀█▀░█▀█░█▀█░▀█▀░█▀▀░░\n' >> /etc/motd
-    printf '░█▀█░█░█░▀▀█░░█░░░░░█░░█░█░█░█░░█░░█░░░░\n' >> /etc/motd
-    printf '░▀░▀░▀▀▀░▀▀▀░░▀░░░░░▀░░▀▀▀░▀░▀░▀▀▀░▀▀▀░░\n' >> /etc/motd
-    printf '══════════════════════════════════════════════\n' >> /etc/motd
-    printf 'Premium Cloud • VPS • Dedicated Servers\n' >> /etc/motd
-    printf 'Website : https://hosttonic.com\n' >> /etc/motd
-    printf '══════════════════════════════════════════════\n\n' >> /etc/motd
-    success "Banner written to /etc/motd"
-
-    # Dynamic stats via profile.d (runs on every interactive login shell)
-    step "Installing dynamic stats → /etc/profile.d/hosttonic-motd.sh"
-    write_stats_script /etc/profile.d/hosttonic-motd.sh
-    success "Installed /etc/profile.d/hosttonic-motd.sh"
+    # Clear /etc/motd — banner will be printed by profile.d script instead.
+    # This prevents the duplicate: sshd shows /etc/motd, then profile.d shows
+    # the banner again. One script = one display path.
+    step "Clearing /etc/motd (banner served by profile.d to avoid duplication)"
+    > /etc/motd
+    success "/etc/motd cleared."
 
     # Clear /etc/motd.d/ if it exists (RHEL 8+ splits motd here)
     if [[ -d /etc/motd.d ]]; then
         rm -f /etc/motd.d/*
         info "Cleared /etc/motd.d/ (prevents duplicate banner)"
     fi
+
+    # Write profile.d script: banner + stats in one file
+    step "Installing banner + stats → /etc/profile.d/hosttonic-motd.sh"
+    local TARGET="/etc/profile.d/hosttonic-motd.sh"
+    cat > "$TARGET" <<'PROFILED'
+# HostTonic MOTD — banner + dynamic stats on login
+# Guard: only run for interactive shells
+[[ $- == *i* ]] || return 0
+set +e  # MUST NOT fail — never abort login on any error
+
+# Run everything in a subshell — stderr suppressed, no exit can reach login shell
+(
+set +e
+
+# ── Static banner ────────────────────────────────────────────
+printf '\n══════════════════════════════════════════════\n'
+printf '░█░█░█▀█░█▀▀░▀█▀░░░▀█▀░█▀█░█▀█░▀█▀░█▀▀░░\n'
+printf '░█▀█░█░█░▀▀█░░█░░░░░█░░█░█░█░█░░█░░█░░░░\n'
+printf '░▀░▀░▀▀▀░▀▀▀░░▀░░░░░▀░░▀▀▀░▀░▀░▀▀▀░▀▀▀░░\n'
+printf '══════════════════════════════════════════════\n'
+printf 'Premium Cloud • VPS • Dedicated Servers\n'
+printf 'Website : https://hosttonic.com\n'
+printf '══════════════════════════════════════════════\n\n'
+
+# ── 60-second output cache (per-user, avoids permission issues) ──
+CACHE_FILE="/tmp/.hosttonic_motd_cache_${UID:-0}"
+if [[ -f "$CACHE_FILE" ]] && [[ -n "$(find "$CACHE_FILE" -mmin -1 2>/dev/null)" ]]; then
+    cat "$CACHE_FILE"
+    return 0 2>/dev/null || true
+fi
+
+# ── Gather stats ─────────────────────────────────────────────
+if command -v journalctl >/dev/null 2>&1; then
+    FAILED_ROOT_24H=$(timeout 2 journalctl _COMM=sshd --since "24 hours ago" 2>/dev/null \
+        | grep -c "Failed password for root" || echo 0)
+elif [[ -f /var/log/auth.log ]]; then
+    FAILED_ROOT_24H=$(grep -c "Failed password for root" /var/log/auth.log 2>/dev/null || echo 0)
+elif [[ -f /var/log/secure ]]; then
+    FAILED_ROOT_24H=$(grep -c "Failed password for root" /var/log/secure 2>/dev/null || echo 0)
+else
+    FAILED_ROOT_24H="N/A"
+fi
+
+UPTIME=$(uptime -p 2>/dev/null || uptime)
+LOAD=$(awk '{print $1", "$2", "$3}' /proc/loadavg)
+MEM_USED=$(free -m | awk '/Mem:/ {printf "%dMi/%dMi", $3, $2}')
+DISK=$(df -h / | awk 'NR==2 {printf "%s/%s (%s)", $3, $2, $5}')
+LOGIN_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+# ── Render and cache ─────────────────────────────────────────
+{
+    echo "══════════════════════════════════════════════"
+    printf "Server      : %s\n" "$(hostname -f 2>/dev/null || hostname)"
+    printf "Uptime      : %s\n" "$UPTIME"
+    printf "Load Avg    : %s\n" "$LOAD"
+    printf "Memory      : %s\n" "$MEM_USED"
+    printf "Disk (/)    : %s\n" "$DISK"
+    printf "Failed root SSH (24h): %s\n" "$FAILED_ROOT_24H"
+    printf "Login time  : %s\n" "$LOGIN_TIME"
+    echo "══════════════════════════════════════════════"
+} | tee "$CACHE_FILE" && chmod 644 "$CACHE_FILE" 2>/dev/null || true
+
+) 2>/dev/null  # end subshell — stderr silenced, no exit/error reaches login shell
+PROFILED
+    chmod +x "$TARGET"
+    success "Installed /etc/profile.d/hosttonic-motd.sh"
 }
 
 case "${OS_FAMILY}" in
